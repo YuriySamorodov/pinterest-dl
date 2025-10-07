@@ -8,7 +8,7 @@ import streamlit as st
 from pinterest_dl import PinterestDL
 
 # ========================== Configuration Section ==========================
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 MODE_OPTIONS = {
     "Board": ":material/web: Board",
     "Search": ":material/search: Search",
@@ -28,6 +28,19 @@ def open_directory(path):
         subprocess.Popen(["xdg-open", path])
     else:
         raise OSError("Unsupported operating system")
+
+
+def check_ffmpeg() -> bool:
+    """Check if ffmpeg is installed and accessible."""
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+# ========================== Internal global variables ==========================
+IS_FFMEPEG_EXIST = check_ffmpeg()
 
 
 # ========================== UI Functions Section ==========================
@@ -63,9 +76,39 @@ def setup_ui():
         res_x, res_y = quality_section()
         timeout, delay = scraping_section()
         caption_type = caption_selection()
+        download_videos = video_section()
         cookies_section()
 
-    return query, project_name, res_x, res_y, image_limit, timeout, delay, mode, caption_type
+    return (
+        query,
+        project_name,
+        res_x,
+        res_y,
+        image_limit,
+        timeout,
+        delay,
+        mode,
+        caption_type,
+        download_videos,
+    )
+
+
+def video_section():
+    """UI for video download option."""
+    if not IS_FFMEPEG_EXIST:
+        download_videos = st.toggle(
+            "Download Videos",
+            value=False,
+            disabled=True,
+            help="Download Videos if ffmpeg is installed and added to PATH. (`Not Detected`)",
+        )
+    else:
+        download_videos = st.toggle(
+            "Download Videos",
+            value=False,
+            help="Download Videos if available.",
+        )
+    return download_videos
 
 
 def cookies_section():
@@ -208,7 +251,17 @@ def download_cookies(email, password, after_sec, headless, incognito, driver):
 
 
 def scrape_images(
-    url, project_name, project_dir, res_x, res_y, limit, timeout, delay, caption, msg
+    url,
+    project_name,
+    project_dir,
+    res_x,
+    res_y,
+    limit,
+    timeout,
+    delay,
+    caption,
+    msg,
+    download_videos,
 ):
     """Scrape images from a Pinterest board URL."""
     session_time = time.strftime("%Y%m%d%H%M%S")
@@ -241,13 +294,24 @@ def scrape_images(
         cache_path=cache_filename,
         delay=delay,
         caption=caption,
+        download_streams=download_videos,
     )
     msg.success("Scrape Complete!")
     print("Done.")
 
 
 def search_images(
-    query, project_name, project_dir, res_x, res_y, limit, timeout, delay, caption, msg
+    query,
+    project_name,
+    project_dir,
+    res_x,
+    res_y,
+    limit,
+    timeout,
+    delay,
+    caption,
+    msg,
+    download_videos,
 ):
     """Search for images using a query and download results."""
     session_time = time.strftime("%Y%m%d%H%M%S")
@@ -280,6 +344,7 @@ def search_images(
         cache_path=cache_filename,
         delay=delay,
         caption=caption,
+        download_streams=download_videos,
     )
     msg.success("Scrape Complete!")
     print("Done.")
@@ -289,7 +354,18 @@ def search_images(
 def main():
     st.set_page_config(page_title="Pinterest DL")
     init_state()
-    query, project_name, res_x, res_y, image_limit, timeout, delay, mode, caption = setup_ui()
+    (
+        query,
+        project_name,
+        res_x,
+        res_y,
+        image_limit,
+        timeout,
+        delay,
+        mode,
+        caption,
+        download_videos,
+    ) = setup_ui()
     project_dir = Path("downloads", project_name)
     footer()
 
@@ -310,6 +386,7 @@ def main():
                         delay=delay,
                         caption=caption,
                         msg=msg,
+                        download_videos=download_videos,
                     )
                 elif mode == MODE_OPTIONS["Search"]:
                     search_images(
@@ -323,6 +400,7 @@ def main():
                         delay=delay,
                         caption=caption,
                         msg=msg,
+                        download_videos=download_videos,
                     )
                 else:
                     msg.error("Invalid mode selected!")
