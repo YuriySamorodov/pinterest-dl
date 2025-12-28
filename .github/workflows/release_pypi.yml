@@ -1,0 +1,38 @@
+name: Publish to PyPI on release
+
+on:
+  release:
+    types: [released]
+
+jobs:
+  pypi-publish:
+    name: Publish release to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-release
+      url: https://pypi.org/p/pinterest-dl
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Update version from release tag
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "Updating version to: $VERSION"
+          sed -i "s/__version__ = \"0.0.0.dev0\"/__version__ = \"$VERSION\"/" pinterest_dl/__init__.py
+          cat pinterest_dl/__init__.py | head -n 1
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools wheel build
+      - name: Build package
+        run: |
+          python -m build
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
