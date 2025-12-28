@@ -137,10 +137,10 @@ class HlsProcessor:
         last_exc = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                resp = self.session.get(url, timeout=self.timeout)
-                if resp.status_code == 200:
-                    return resp.content
-                last_exc = HlsDownloadError(f"HTTP {resp.status_code} for segment: {url}")
+                with self.session.get(url, timeout=self.timeout) as resp:
+                    if resp.status_code == 200:
+                        return resp.content
+                    last_exc = HlsDownloadError(f"HTTP {resp.status_code} for segment: {url}")
             except requests.RequestException as e:
                 last_exc = e
         raise HlsDownloadError(

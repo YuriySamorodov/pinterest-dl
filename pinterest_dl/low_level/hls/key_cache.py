@@ -38,11 +38,11 @@ class KeyCache:
         last_exc = None
         for attempt in range(1, self._max_retries + 1):
             try:
-                resp = self._session.get(url, timeout=self._timeout)
-                if resp.status_code == 200:
-                    self._cache[url] = resp.content
-                    return resp.content
-                last_exc = HlsDownloadError(f"HTTP {resp.status_code}")
+                with self._session.get(url, timeout=self._timeout) as resp:
+                    if resp.status_code == 200:
+                        self._cache[url] = resp.content
+                        return resp.content
+                    last_exc = HlsDownloadError(f"HTTP {resp.status_code}")
             except requests.RequestException as e:
                 last_exc = e
         raise HlsDownloadError(f"Failed to fetch key {url}: {last_exc}")
