@@ -441,19 +441,36 @@ def scrape_images(
         if res_x > 0 or res_y > 0:
             imgs_data = [img for img in imgs_data if img.resolution[0] >= res_x and img.resolution[1] >= res_y]
 
+        # Filter out already downloaded files
+        from pinterest_dl.scrapers.scraper_base import _ScraperBase
+        registry = _ScraperBase._load_downloaded_registry(project_dir)
+        filtered_imgs_data = []
+        for img in imgs_data:
+            if img.id in registry:
+                registered_path = Path(registry[img.id].get("path", ""))
+                if registered_path.exists():
+                    print(f"Skipping already downloaded: {img.id} at {registered_path}")
+                    continue
+            filtered_imgs_data.append(img)
+        imgs_data = filtered_imgs_data
+
         # Download
         if imgs_data:
             with st.spinner("Downloading..."):
                 from pinterest_dl.low_level.http.downloader import PinterestMediaDownloader
                 downloader = PinterestMediaDownloader(user_agent="PinterestDL/0.8.3")
                 try:
-                    downloader.download_concurrent(
+                    local_paths = downloader.download_concurrent(
                         imgs_data,
                         project_dir,
-                        download_streams=False,
+                        download_streams=download_videos,
                         num_threads=4,
                         fail_fast=False
                     )
+                    # Update registry with downloaded files
+                    for img, path in zip(imgs_data, local_paths):
+                        registry[img.id] = {"path": str(path), "downloaded_at": str(Path(path).stat().st_mtime)}
+                    _ScraperBase._save_downloaded_registry(project_dir, registry)
                 except Exception as e:
                     error_str = str(e)
                     st.session_state['error'] = f"Download failed: {error_str}"
