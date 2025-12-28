@@ -52,8 +52,8 @@ class PinterestMedia:
             "alt": self.alt,
             "origin": self.origin,
             "resolution": {
-                "x": self.resolution[0] if self.resolution else None,
-                "y": self.resolution[1] if self.resolution else None,
+                "x": self.resolution[0] if self.resolution and self.resolution != (0, 0) else None,
+                "y": self.resolution[1] if self.resolution and self.resolution != (0, 0) else None,
             },
         }
         if self.video_stream:

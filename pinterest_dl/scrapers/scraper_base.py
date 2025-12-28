@@ -19,6 +19,28 @@ class _ScraperBase:
         pass
 
     @staticmethod
+    def _load_downloaded_registry(output_dir: Path) -> dict:
+        """Load the downloaded files registry from JSON file."""
+        registry_path = output_dir / "downloaded.json"
+        if registry_path.exists():
+            try:
+                with open(registry_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load downloaded registry: {e}. Starting fresh.")
+        return {}
+
+    @staticmethod
+    def _save_downloaded_registry(output_dir: Path, registry: dict) -> None:
+        """Save the downloaded files registry to JSON file."""
+        registry_path = output_dir / "downloaded.json"
+        try:
+            with open(registry_path, "w", encoding="utf-8") as f:
+                json.dump(registry, f, indent=4, ensure_ascii=False)
+        except IOError as e:
+            logger.error(f"Failed to save downloaded registry: {e}")
+
+    @staticmethod
     def download_media(
         media: List[PinterestMedia],
         output_dir: Union[str, Path],
@@ -38,6 +60,27 @@ class _ScraperBase:
             output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Load registry of already downloaded files
+        registry = _ScraperBase._load_downloaded_registry(output_dir)
+
+        # Filter out already downloaded media
+        to_download = []
+        for item in media:
+            if item.id in registry:
+                registered_path = Path(registry[item.id].get("path", ""))
+                if registered_path.exists():
+                    logger.info(f"Skipping already downloaded: {item.id} at {registered_path}")
+                    item.set_local_path(registered_path)
+                    continue
+                else:
+                    # File missing, remove from registry
+                    del registry[item.id]
+            to_download.append(item)
+
+        if not to_download:
+            logger.info("All media already downloaded.")
+            return media
+
         dl = downloader.PinterestMediaDownloader(
             user_agent=USER_AGENT,
             timeout=10,
@@ -55,14 +98,16 @@ class _ScraperBase:
                 download_streams = False
 
         try:
-            local_paths = dl.download_concurrent(media, output_dir, download_streams)
+            local_paths = dl.download_concurrent(to_download, output_dir, download_streams)
         except Exception as e:
             # Log the error and re-raise for CLI to handle
             logger.error(f"Download failed: {e}")
             raise
 
-        for item, path in zip(media, local_paths):
+        for item, path in zip(to_download, local_paths):
             item.set_local_path(path)
+            # Update registry
+            registry[item.id] = {"path": str(path), "downloaded_at": str(Path(path).stat().st_mtime)}
             if item.resolution is None or item.resolution == (0, 0):
                 try:
                     item.set_local_resolution(path)
@@ -70,6 +115,9 @@ class _ScraperBase:
                     print(f"Warning: Local path '{path}' does not exist. Skipping resolution set.")
                 except UnsupportedMediaTypeError as ve:
                     print(f"Warning: {ve}. Skipping resolution set for '{path}'.")
+
+        # Save updated registry
+        _ScraperBase._save_downloaded_registry(output_dir, registry)
 
         return media
 
@@ -99,12 +147,17 @@ class _ScraperBase:
         for img in tqdm.tqdm(images, desc="Captioning to file", disable=verbose):
             if not img.local_path:
                 continue
+            caption_path = output_dir / f"{img.local_path.stem}.{extension}"
+            if caption_path.exists():
+                if verbose:
+                    print(f"Caption file already exists for {img.local_path}, skipping.")
+                continue
             if extension == "json":
-                with open(output_dir / f"{img.local_path.stem}.json", "w") as f:
+                with open(caption_path, "w") as f:
                     f.write(json.dumps(img.to_dict(), indent=4))
             elif extension == "txt":
                 if img.alt:
-                    with open(output_dir / f"{img.local_path.stem}.txt", "w") as f:
+                    with open(caption_path, "w") as f:
                         f.write(img.alt)
                 else:
                     if verbose:
