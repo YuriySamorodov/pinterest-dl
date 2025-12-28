@@ -22,13 +22,45 @@ class _ScraperBase:
     def _load_downloaded_registry(output_dir: Path) -> dict:
         """Load the downloaded files registry from JSON file."""
         registry_path = output_dir.parent / "downloaded.json"
+        registry = {}
         if registry_path.exists():
             try:
                 with open(registry_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    registry = json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning(f"Failed to load downloaded registry: {e}. Starting fresh.")
-        return {}
+        
+        # If registry is empty, try to initialize from existing files
+        if not registry:
+            downloads_dir = output_dir.parent
+            if downloads_dir.exists():
+                for project_dir in downloads_dir.iterdir():
+                    if project_dir.is_dir() and not project_dir.name.startswith('_'):
+                        for file_path in project_dir.glob('*.jpg'):
+                            try:
+                                pin_id = int(file_path.stem)
+                                registry[pin_id] = {
+                                    "path": str(file_path),
+                                    "downloaded_at": str(file_path.stat().st_mtime)
+                                }
+                            except ValueError:
+                                continue  # Skip files that don't have numeric stem
+                        # Also check for other extensions if needed
+                        for ext in ['*.jpeg', '*.png', '*.gif', '*.webp', '*.mp4']:
+                            for file_path in project_dir.glob(ext):
+                                try:
+                                    pin_id = int(file_path.stem)
+                                    if pin_id not in registry:  # Prefer jpg if exists
+                                        registry[pin_id] = {
+                                            "path": str(file_path),
+                                            "downloaded_at": str(file_path.stat().st_mtime)
+                                        }
+                                except ValueError:
+                                    continue
+            # Save the initialized registry
+            _ScraperBase._save_downloaded_registry(output_dir, registry)
+        
+        return registry
 
     @staticmethod
     def _save_downloaded_registry(output_dir: Path, registry: dict) -> None:
