@@ -21,7 +21,7 @@ class _ScraperBase:
     @staticmethod
     def _load_downloaded_registry(output_dir: Path) -> dict:
         """Load the downloaded files registry from JSON file."""
-        registry_path = output_dir / "downloaded.json"
+        registry_path = output_dir.parent / "downloaded.json"
         if registry_path.exists():
             try:
                 with open(registry_path, "r", encoding="utf-8") as f:
@@ -33,7 +33,7 @@ class _ScraperBase:
     @staticmethod
     def _save_downloaded_registry(output_dir: Path, registry: dict) -> None:
         """Save the downloaded files registry to JSON file."""
-        registry_path = output_dir / "downloaded.json"
+        registry_path = output_dir.parent / "downloaded.json"
         try:
             with open(registry_path, "w", encoding="utf-8") as f:
                 json.dump(registry, f, indent=4, ensure_ascii=False)
