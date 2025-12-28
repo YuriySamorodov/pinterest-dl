@@ -30,6 +30,8 @@ class _ScraperBase:
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning(f"Failed to load downloaded registry: {e}. Starting fresh.")
         
+        print(f"Loaded registry with {len(registry)} entries from {registry_path}")
+        
         # If registry is empty, try to initialize from existing files
         if not registry:
             downloads_dir = output_dir.parent
@@ -57,6 +59,7 @@ class _ScraperBase:
                                         }
                                 except ValueError:
                                     continue
+            print(f"Initialized registry with {len(registry)} entries from existing files")
             # Save the initialized registry
             _ScraperBase._save_downloaded_registry(output_dir, registry)
         
@@ -69,6 +72,7 @@ class _ScraperBase:
         try:
             with open(registry_path, "w", encoding="utf-8") as f:
                 json.dump(registry, f, indent=4, ensure_ascii=False)
+            print(f"Saved registry with {len(registry)} entries to {registry_path}")
         except IOError as e:
             logger.error(f"Failed to save downloaded registry: {e}")
 
