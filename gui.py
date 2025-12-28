@@ -65,18 +65,19 @@ def setup_ui():
     # Query input depends on selected mode.
     if mode == MODE_OPTIONS["Board"]:
         query = st.text_input(
-            "Pinterest URL", placeholder="https://www.pinterest.com/pin/1234567890/"
+            "Pinterest URL", placeholder="https://www.pinterest.com/pin/1234567890/ or visual search URL"
         )
     else:
         query = st.text_input("Search Query", placeholder="Impressionist Art")
 
     # Gather project information.
-    project_name, image_limit = project_section()
+    project_name, image_limit, recurse_factor = project_section()
     with st.expander("Scrape Options"):
         res_x, res_y = quality_section()
         timeout, delay = scraping_section()
         caption_type = caption_selection()
         download_videos = video_section()
+        use_browser, driver, headless, incognito = browser_section()
         cookies_section()
 
     return (
@@ -84,12 +85,15 @@ def setup_ui():
         project_name,
         res_x,
         res_y,
-        image_limit,
-        timeout,
+        image_limit,        recurse_factor,        timeout,
         delay,
         mode,
         caption_type,
         download_videos,
+        use_browser,
+        driver,
+        headless,
+        incognito,
     )
 
 
@@ -145,6 +149,22 @@ def caption_selection():
     return caption_type
 
 
+def browser_section():
+    """UI for browser scraping options."""
+    use_browser = st.toggle("Use Browser Scraping", value=False, help="Use browser instead of API for scraping (slower but may work for some URLs)")
+    driver = None
+    headless = True
+    incognito = True
+    if use_browser:
+        driver = st.selectbox("Webdriver", ["chrome", "firefox"])
+        options = st.pills(
+            "Driver Options", ["Headless", "Incognito"], selection_mode="multi", default=["Headless", "Incognito"]
+        )
+        headless = "Headless" in options
+        incognito = "Incognito" in options
+    return use_browser, driver, headless, incognito
+
+
 @st.dialog("Pinterest Login")
 def login_dialog():
     """Dialog box for logging in and retrieving cookies."""
@@ -173,12 +193,14 @@ def login_dialog():
 
 def project_section():
     """UI for specifying the project name and image limit."""
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         project_name = st.text_input("Project Name", placeholder="Concept Art")
     with col2:
-        image_limit = st.number_input("Image Limit", 1, 1000, 100, step=1)
-    return project_name, image_limit
+        image_limit = st.number_input("Image Limit", 1, 100000, 100, step=1)
+    with col3:
+        recurse_factor = st.number_input("Recurse Factor", 0, 1000, 1, step=1, help="Number of recursive visual search levels (0 = no recursion, 1 = one level)")
+    return project_name, image_limit, recurse_factor
 
 
 def quality_section():
@@ -193,7 +215,7 @@ def quality_section():
 
 def scraping_section() -> tuple[float, float]:
     """UI for setting timeout and delay options."""
-    timeout = st.slider("Timeout (sec)", 0.0, 30.0, 10.0, help="Timeout for each request")
+    timeout = st.slider("Timeout (sec)", 0.0, 1000.0, 120.0, help="Timeout for each request (increase for large limits)")
     delay = st.slider("Delay (sec)", 0.0, 2.0, 0.8, help="Delay between requests")
     return timeout, delay
 
@@ -257,47 +279,264 @@ def scrape_images(
     res_x,
     res_y,
     limit,
+    recurse_factor,
     timeout,
     delay,
     caption,
-    msg,
     download_videos,
+    use_browser,
+    driver,
+    headless,
+    incognito,
 ):
     """Scrape images from a Pinterest board URL."""
+    from pinterest_dl.utils import io
     session_time = time.strftime("%Y%m%d%H%M%S")
     cache_path = Path("downloads", "_cache")
     cache_path.mkdir(parents=True, exist_ok=True)
     cache_filename = Path(cache_path, f"{project_name}_{session_time}.json")
 
     if not url or not project_name:
-        msg.error("Please enter a URL and Project Name!")
+        st.session_state['error'] = "Please enter a URL and Project Name!"
         return
 
     if project_dir.exists():
-        msg.warning("Project already exists! Merge with existing data.")
+        st.session_state['warning'] = "Project already exists! Merge with existing data."
 
-    api_instance = PinterestDL.with_api(
-        timeout=timeout,
-        ensure_alt=st.session_state.ensure_cap,
-    )
-    if st.session_state.use_cookies:
-        if not COOKIES_PATH.exists():
-            msg.error("No cookies found!")
-            return
-        api_instance = api_instance.with_cookies_path(COOKIES_PATH)
+    # Extract original pin ID if URL is a pin URL
+    original_pin_id = None
+    if '/pin/' in url:
+        import re
+        match = re.search(r'/pin/(\d+)/', url)
+        if match:
+            original_pin_id = match.group(1)
 
-    api_instance.scrape_and_download(
-        url=url,
-        output_dir=project_dir,
-        num=limit,
-        min_resolution=(res_x, res_y),
-        cache_path=cache_filename,
-        delay=delay,
-        caption=caption,
-        download_streams=download_videos,
-    )
-    msg.success("Scrape Complete!")
-    print("Done.")
+    if use_browser:
+        # Patch to continue on download errors
+        from pinterest_dl.low_level.http.downloader import PinterestMediaDownloader as Downloader
+        original_download_concurrent = Downloader.download_concurrent
+        def patched_download_concurrent(self, media_list, output_dir, download_streams=False, num_threads=4, fail_fast=True):
+            return original_download_concurrent(self, media_list, output_dir, download_streams, num_threads, fail_fast=False)
+        Downloader.download_concurrent = patched_download_concurrent
+
+        # Patch to increase timeout for scraping and add load more clicking
+        from pinterest_dl.low_level.webdriver.pinterest_driver import PinterestDriver
+        from selenium.webdriver.common.by import By
+        import copy
+        import random
+        import socket
+        from selenium.common.exceptions import StaleElementReferenceException
+        from selenium.webdriver.common.keys import Keys
+        from tqdm import tqdm
+        from pinterest_dl.data_model.pinterest_media import PinterestMedia
+
+        def patched_scrape(self, url, num=20, timeout=3, verbose=False, ensure_alt=False):
+            unique_results = set()
+            imgs_data = []
+            previous_divs = []
+            scroll_count = 0
+            no_new_scrolls = 0
+            pbar = tqdm(total=num, desc="Scraping")
+            try:
+                self.webdriver.get(url)
+                while scroll_count < 800:
+                    try:
+                        current_unique = len(unique_results)
+                        divs = self.webdriver.find_elements(By.CSS_SELECTOR, "div[data-test-id='pin']")
+                        for div in divs:
+                            if len(unique_results) >= num:
+                                break
+                            images = div.find_elements(By.TAG_NAME, "img")
+                            href = div.find_element(By.TAG_NAME, "a").get_attribute("href")
+                            id = div.get_attribute("data-test-pin-id")
+                            if not id:
+                                continue
+                            for image in images:
+                                alt = image.get_attribute("alt")
+                                if ensure_alt and (not alt or not alt.strip()):
+                                    continue
+                                src = image.get_attribute("src")
+                                if src and "/236x/" in src:
+                                    src = src.replace("/236x/", "/originals/")
+                                    if src not in unique_results:
+                                        unique_results.add(src)
+                                        img_data = PinterestMedia(
+                                            int(id),
+                                            src,
+                                            alt,
+                                            href,
+                                            resolution=(0, 0),
+                                        )
+                                        imgs_data.append(img_data)
+                                        pbar.update(1)
+                                        if len(unique_results) >= num:
+                                            break
+
+                        new_in_scroll = len(unique_results) - current_unique
+                        if new_in_scroll == 0:
+                            no_new_scrolls += 1
+                        else:
+                            no_new_scrolls = 0
+                        if no_new_scrolls >= 10:
+                            break
+
+                        previous_divs = copy.copy(divs)
+
+                        # Scroll down
+                        dummy = self.webdriver.find_element(By.TAG_NAME, "body")
+                        dummy.send_keys(Keys.PAGE_DOWN)
+                        self.randdelay(1, 2)
+                        scroll_count += 1
+                        if scroll_count % 10 == 0:
+                            print(f"\nScrolled {scroll_count} times...")
+
+                        # Try to click load more
+                        try:
+                            load_more = self.webdriver.find_element(By.XPATH, "//button[contains(text(), 'See more') or contains(text(), 'Load more') or contains(@aria-label, 'See more')]")
+                            load_more.click()
+                            print("Clicked load more button...")
+                            time.sleep(2)
+                        except:
+                            pass
+
+                    except StaleElementReferenceException:
+                        if verbose:
+                            print("\nStaleElementReferenceException")
+
+            except (socket.error, socket.timeout):
+                print("Socket Error")
+            finally:
+                pbar.close()
+                if verbose:
+                    print(f"Scraped {len(imgs_data)} images")
+            return imgs_data
+
+        PinterestDriver.scrape = patched_scrape
+
+        scraped_ids = set()
+        imgs_data = []
+        scraped = 0
+        batch_limit = limit
+        api_instance = PinterestDL.with_browser(
+            driver,
+            headless=headless,
+            incognito=incognito,
+            timeout=timeout,
+        )
+        if st.session_state.use_cookies:
+            if not COOKIES_PATH.exists():
+                st.session_state['error'] = "No cookies found!"
+                return
+            api_instance = api_instance.with_cookies_path(COOKIES_PATH)
+        scraped_imgs = api_instance.scrape(url, batch_limit)
+        for img in scraped_imgs:
+            if img.id not in scraped_ids:
+                scraped_ids.add(img.id)
+                imgs_data.append(img)
+                scraped += 1
+                if scraped >= limit:
+                    break
+
+        # Filter by resolution
+        if res_x > 0 or res_y > 0:
+            imgs_data = [img for img in imgs_data if img.resolution[0] >= res_x and img.resolution[1] >= res_y]
+
+        # Download
+        if imgs_data:
+            with st.spinner("Downloading..."):
+                from pinterest_dl.low_level.http.downloader import PinterestMediaDownloader
+                downloader = PinterestMediaDownloader(user_agent="PinterestDL/0.8.3")
+                try:
+                    downloader.download_concurrent(
+                        imgs_data,
+                        project_dir,
+                        download_streams=False,
+                        num_threads=4,
+                        fail_fast=False
+                    )
+                except Exception as e:
+                    error_str = str(e)
+                    st.session_state['error'] = f"Download failed: {error_str}"
+                    print(f"Download error details: {error_str}")  # Full error to console
+
+            # Log downloaded URLs
+            log_file = project_dir / "downloaded_urls.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                for img in imgs_data:
+                    f.write(f"{img.src}\n")
+
+            # Recursive visual search
+            if recurse_factor > 0:
+                for img in imgs_data:
+                    if str(img.id) == original_pin_id:
+                        continue  # Skip the original pin
+                    new_project_name = f"20251228_Test_{img.id}"
+                    new_project_dir = Path("downloads", new_project_name)
+                    new_url = f"https://se.pinterest.com/pin/{img.id}/visual-search/?cropSource=5&entrypoint=closeup_cta&rs=flashlight"
+                    print(f"Recursing to visual search for pin {img.id}")
+                    scrape_images(
+                        url=new_url,
+                        project_name=new_project_name,
+                        project_dir=new_project_dir,
+                        res_x=res_x,
+                        res_y=res_y,
+                        limit=limit,  # same limit
+                        recurse_factor=recurse_factor - 1,
+                        timeout=timeout,
+                        delay=delay,
+                        caption=caption,
+                        download_videos=download_videos,
+                        use_browser=True,  # force browser for visual search
+                        driver=driver,
+                        headless=headless,
+                        incognito=incognito,
+                    )
+
+        # Save cache
+        imgs_dict = [img.to_dict() for img in imgs_data]
+        io.write_json(imgs_dict, cache_filename, indent=4)
+
+        st.session_state['success'] = "Scrape Complete!"
+        print("Done.")
+    else:
+        api_instance = PinterestDL.with_api(
+            timeout=timeout,
+            ensure_alt=st.session_state.ensure_cap,
+        )
+        if st.session_state.use_cookies:
+            if not COOKIES_PATH.exists():
+                st.session_state['error'] = "No cookies found!"
+                return
+            api_instance = api_instance.with_cookies_path(COOKIES_PATH)
+
+        try:
+            api_instance.scrape_and_download(
+                url=url,
+                output_dir=project_dir,
+                num=limit,
+                min_resolution=(res_x, res_y),
+                cache_path=cache_filename,
+                delay=delay,
+                caption=caption,
+                download_streams=download_videos,
+            )
+            st.session_state['success'] = "Scrape Complete!"
+        except Exception as e:
+            st.session_state['error'] = f"Scrape failed: {str(e)}"
+        print("Done.")
+
+        # Log downloaded URLs from cache
+        if cache_filename.exists():
+            import json
+            with open(cache_filename, "r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+            log_file = project_dir / "downloaded_urls.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                for item in cached_data:
+                    if "url" in item:
+                        f.write(f"{item['url']}\n")
+
+        # For API mode, no recursive since no pin IDs available
 
 
 def search_images(
@@ -307,11 +546,15 @@ def search_images(
     res_x,
     res_y,
     limit,
+    recurse_factor,
     timeout,
     delay,
     caption,
-    msg,
     download_videos,
+    use_browser,
+    driver,
+    headless,
+    incognito,
 ):
     """Search for images using a query and download results."""
     session_time = time.strftime("%Y%m%d%H%M%S")
@@ -320,11 +563,15 @@ def search_images(
     cache_filename = Path(cache_path, f"{project_name}_{session_time}.json")
 
     if not query or not project_name:
-        msg.error("Please enter a query and Project Name!")
+        st.session_state['error'] = "Please enter a query and Project Name!"
         return
 
     if project_dir.exists():
-        msg.warning("Project already exists! Merge with existing data.")
+        st.session_state['warning'] = "Project already exists! Merge with existing data."
+
+    if use_browser:
+        st.session_state['error'] = "Browser scraping not supported for search mode. Please use API mode."
+        return
 
     api_instance = PinterestDL.with_api(
         timeout=timeout,
@@ -332,7 +579,7 @@ def search_images(
     )
     if st.session_state.use_cookies:
         if not COOKIES_PATH.exists():
-            msg.error("No cookies found!")
+            st.session_state['error'] = "No cookies found!"
             return
         api_instance = api_instance.with_cookies_path(COOKIES_PATH)
 
@@ -346,8 +593,19 @@ def search_images(
         caption=caption,
         download_streams=download_videos,
     )
-    msg.success("Scrape Complete!")
+    st.session_state['success'] = "Scrape Complete!"
     print("Done.")
+
+    # Log downloaded URLs from cache
+    if cache_filename.exists():
+        import json
+        with open(cache_filename, "r", encoding="utf-8") as f:
+            cached_data = json.load(f)
+        log_file = project_dir / "downloaded_urls.log"
+        with open(log_file, "a", encoding="utf-8") as f:
+            for item in cached_data:
+                if "url" in item:
+                    f.write(f"{item['url']}\n")
 
 
 # ========================== Main Application Section ==========================
@@ -360,19 +618,33 @@ def main():
         res_x,
         res_y,
         image_limit,
+        recurse_factor,
         timeout,
         delay,
         mode,
         caption,
         download_videos,
+        use_browser,
+        driver,
+        headless,
+        incognito,
     ) = setup_ui()
     project_dir = Path("downloads", project_name)
     footer()
 
+    if "visual-search" in query:
+        use_browser = True
+        if driver is None:
+            driver = "chrome"  # default
+        st.info("Visual search URL detected. Using browser scraping automatically.")
+
     col1, col2 = st.columns([0.5, 2])
-    msg = st.empty()
     with col1:
         if st.button("Scrape", type="primary"):
+            # Clear previous messages
+            for key in ['error', 'warning', 'success']:
+                if key in st.session_state:
+                    del st.session_state[key]
             with st.spinner("Scraping..."):
                 if mode == MODE_OPTIONS["Board"]:
                     scrape_images(
@@ -382,11 +654,15 @@ def main():
                         res_x=res_x,
                         res_y=res_y,
                         limit=image_limit,
+                        recurse_factor=recurse_factor,
                         timeout=timeout,
                         delay=delay,
                         caption=caption,
-                        msg=msg,
                         download_videos=download_videos,
+                        use_browser=use_browser,
+                        driver=driver,
+                        headless=headless,
+                        incognito=incognito,
                     )
                 elif mode == MODE_OPTIONS["Search"]:
                     search_images(
@@ -396,21 +672,33 @@ def main():
                         res_x=res_x,
                         res_y=res_y,
                         limit=image_limit,
+                        recurse_factor=recurse_factor,
                         timeout=timeout,
                         delay=delay,
                         caption=caption,
-                        msg=msg,
                         download_videos=download_videos,
+                        use_browser=use_browser,
+                        driver=driver,
+                        headless=headless,
+                        incognito=incognito,
                     )
                 else:
-                    msg.error("Invalid mode selected!")
+                    st.session_state['error'] = "Invalid mode selected!"
 
     with col2:
         if st.button("📂 Open Directory"):
             if project_dir.exists():
                 open_directory(project_dir)
             else:
-                msg.warning("Project directory does not exist!")
+                st.session_state['warning'] = "Project directory does not exist!"
+
+    # Display messages below buttons
+    if 'error' in st.session_state:
+        st.error(st.session_state['error'])
+    if 'warning' in st.session_state:
+        st.warning(st.session_state['warning'])
+    if 'success' in st.session_state:
+        st.success(st.session_state['success'])
 
 
 if __name__ == "__main__":

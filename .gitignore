@@ -3,6 +3,7 @@ __pycache__
 *.pyc
 cache
 downloads
+<<<<<<< Updated upstream
 cookies
 build
 bin
@@ -10,3 +11,7 @@ __pycache__
 *.pyc
 *.egg-info
 errors
+=======
+errors
+cookies
+>>>>>>> Stashed changes
