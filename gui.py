@@ -444,6 +444,7 @@ def scrape_images(
         # Filter out already downloaded files
         from pinterest_dl.scrapers.scraper_base import _ScraperBase
         registry = _ScraperBase._load_downloaded_registry(project_dir)
+        original_count = len(imgs_data)
         filtered_imgs_data = []
         for img in imgs_data:
             if img.id in registry:
@@ -453,6 +454,8 @@ def scrape_images(
                     continue
             filtered_imgs_data.append(img)
         imgs_data = filtered_imgs_data
+        if original_count > len(imgs_data):
+            print(f"Filtered {original_count - len(imgs_data)} duplicates, downloading {len(imgs_data)} new files")
 
         # Download
         if imgs_data:
