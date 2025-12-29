@@ -468,20 +468,24 @@ def scrape_images(
             st.info(f"Added {added_count} new pin IDs to registry before download.")
 
         # Download
-        if imgs_data:
+        download_list = imgs_data
+        if not imgs_data:
+            st.info("No new files to download, processing all files in batch (including skipped).")
+            download_list = scraped_imgs  # исходный список до фильтрации
+        if download_list:
             with st.spinner("Downloading..."):
                 from pinterest_dl.low_level.http.downloader import PinterestMediaDownloader
                 downloader = PinterestMediaDownloader(user_agent="PinterestDL/0.8.3")
                 try:
                     local_paths = downloader.download_concurrent(
-                        imgs_data,
+                        download_list,
                         project_dir,
                         download_streams=download_videos,
                         max_workers=4,
                         fail_fast=False
                     )
-                    # Update registry with downloaded files
-                    for img, path in zip(imgs_data, local_paths):
+                    # Update registry с новыми путями
+                    for img, path in zip(download_list, local_paths):
                         registry[str(img.id)] = {"path": str(path), "downloaded_at": str(Path(path).stat().st_mtime)}
                     _ScraperBase._save_downloaded_registry(project_dir)
                 except Exception as e:
