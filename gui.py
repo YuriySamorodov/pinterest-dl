@@ -288,6 +288,7 @@ def scrape_images(
     driver,
     headless,
     incognito,
+    is_recursive=False,
 ):
     """Scrape images from a Pinterest board URL."""
     from pinterest_dl.utils import io
@@ -444,18 +445,18 @@ def scrape_images(
         # Filter out already downloaded files
         from pinterest_dl.scrapers.scraper_base import _ScraperBase
         registry = _ScraperBase._load_downloaded_registry(project_dir)
-        original_count = len(imgs_data)
-        filtered_imgs_data = []
-        for img in imgs_data:
-            if img.id in registry:
-                registered_path = Path(registry[img.id].get("path", ""))
-                if registered_path.exists():
-                    print(f"Skipping already downloaded: {img.id} at {registered_path}")
-                    continue
-            filtered_imgs_data.append(img)
-        imgs_data = filtered_imgs_data
-        if original_count > len(imgs_data):
-            print(f"Filtered {original_count - len(imgs_data)} duplicates, downloading {len(imgs_data)} new files")
+        if not is_recursive:
+            original_count = len(imgs_data)
+            filtered_imgs_data = []
+            for img in imgs_data:
+                if img.id in registry:
+                    registered_path = Path(registry[img.id].get("path", ""))
+                    if registered_path.exists():
+                        print(f"Skipping already downloaded: {img.id} at {registered_path}")
+                        continue
+                filtered_imgs_data.append(img)
+            if original_count > len(imgs_data):
+                print(f"Filtered {original_count - len(imgs_data)} duplicates, downloading {len(imgs_data)} new files")
 
         # Download
         if imgs_data:
@@ -510,6 +511,7 @@ def scrape_images(
                         driver=driver,
                         headless=headless,
                         incognito=incognito,
+                        is_recursive=True,
                     )
 
         # Save cache
