@@ -121,6 +121,8 @@ class _ScraperBase:
                     del registry[item.id]
             to_download.append(item)
 
+        print(f"Filtered {len(media) - len(to_download)} already downloaded items, proceeding to download {len(to_download)} new items.")
+
         if not to_download:
             logger.info("All media already downloaded.")
             return media
