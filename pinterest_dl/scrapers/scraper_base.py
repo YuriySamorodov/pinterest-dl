@@ -15,12 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class _ScraperBase:
+    _global_registry = None
+
     def __init__(self):
         pass
 
     @staticmethod
     def _load_downloaded_registry(output_dir: Path) -> dict:
         """Load the downloaded files registry from JSON file."""
+        if _ScraperBase._global_registry is not None:
+            return _ScraperBase._global_registry
+        
         registry_path = output_dir.parent / "downloaded.json"
         registry = {}
         if registry_path.exists():
@@ -61,18 +66,21 @@ class _ScraperBase:
                                     continue
             print(f"Initialized registry with {len(registry)} entries from existing files")
             # Save the initialized registry
-            _ScraperBase._save_downloaded_registry(output_dir, registry)
+            _ScraperBase._save_downloaded_registry(output_dir)
         
+        _ScraperBase._global_registry = registry
         return registry
 
     @staticmethod
-    def _save_downloaded_registry(output_dir: Path, registry: dict) -> None:
+    def _save_downloaded_registry(output_dir: Path) -> None:
         """Save the downloaded files registry to JSON file."""
+        if _ScraperBase._global_registry is None:
+            return
         registry_path = output_dir.parent / "downloaded.json"
         try:
             with open(registry_path, "w", encoding="utf-8") as f:
-                json.dump(registry, f, indent=4, ensure_ascii=False)
-            print(f"Saved registry with {len(registry)} entries to {registry_path}")
+                json.dump(_ScraperBase._global_registry, f, indent=4, ensure_ascii=False)
+            print(f"Saved registry with {len(_ScraperBase._global_registry)} entries to {registry_path}")
         except IOError as e:
             logger.error(f"Failed to save downloaded registry: {e}")
 
@@ -153,7 +161,7 @@ class _ScraperBase:
                     print(f"Warning: {ve}. Skipping resolution set for '{path}'.")
 
         # Save updated registry
-        _ScraperBase._save_downloaded_registry(output_dir, registry)
+        _ScraperBase._save_downloaded_registry(output_dir)
 
         return media
 
