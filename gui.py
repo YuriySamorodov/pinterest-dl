@@ -289,8 +289,26 @@ def scrape_images(
     headless,
     incognito,
     is_recursive=False,
+    visual_search_visited=None,
 ):
     """Scrape images from a Pinterest board URL."""
+
+    # Extract original pin ID from any url (universal, works for /pin/123/ and /visual-search)
+    import re
+    original_pin_id = None
+    match = re.search(r'/pin/(\d+)', url)
+    if match:
+        original_pin_id = match.group(1)
+    print(f"[DEBUG] url: {url}, original_pin_id: {original_pin_id}")
+
+    if visual_search_visited is None:
+        visual_search_visited = set()
+    print(f"[DEBUG] visual_search_visited: {sorted(visual_search_visited)}")
+
+    if is_recursive and original_pin_id and original_pin_id in visual_search_visited:
+        print(f"[DEBUG] Pin {original_pin_id} already processed in visual search. Skipping recursion.")
+        return
+
     from pinterest_dl.utils import io
     session_time = time.strftime("%Y%m%d%H%M%S")
     cache_path = Path("downloads", "_cache")
@@ -304,13 +322,9 @@ def scrape_images(
     if project_dir.exists():
         st.session_state['warning'] = "Project already exists! Merge with existing data."
 
-    # Extract original pin ID if URL is a pin URL
-    original_pin_id = None
-    if '/pin/' in url:
-        import re
-        match = re.search(r'/pin/(\d+)/', url)
-        if match:
-            original_pin_id = match.group(1)
+    # Всегда добавляем pin_id в visual_search_visited (как строку), если найден
+    if original_pin_id:
+        visual_search_visited.add(str(original_pin_id))
 
     if use_browser:
         # Patch to continue on download errors
@@ -430,6 +444,8 @@ def scrape_images(
                 return
             api_instance = api_instance.with_cookies_path(COOKIES_PATH)
         scraped_imgs = api_instance.scrape(url, batch_limit)
+        # Сохраняем полный список пинов батча до фильтрации
+        all_pins_in_batch = list(scraped_imgs)
         for img in scraped_imgs:
             if img.id not in scraped_ids:
                 scraped_ids.add(img.id)
@@ -469,9 +485,14 @@ def scrape_images(
 
         # Download
         download_list = imgs_data
+        skipped_imgs = []
         if not imgs_data:
             st.info("No new files to download, processing all files in batch (including skipped).")
             download_list = scraped_imgs  # исходный список до фильтрации
+            # Собираем skipped (те, что были в реестре)
+            for img in scraped_imgs:
+                if str(img.id) in registry:
+                    skipped_imgs.append(img)
         if download_list:
             with st.spinner("Downloading..."):
                 from pinterest_dl.low_level.http.downloader import PinterestMediaDownloader
@@ -492,6 +513,39 @@ def scrape_images(
                     error_str = str(e)
                     st.session_state['error'] = f"Download failed: {error_str}"
                     print(f"Download error details: {error_str}")  # Full error to console
+        # Если не было новых файлов, запускаем рекурсивный visual search для skipped
+        if not imgs_data and recurse_factor > 0 and 'all_pins_in_batch' in locals() and all_pins_in_batch:
+            # Рекурсивно запускаем visual search для всех pin'ов батча, кроме уже обработанных visual_search_visited
+            to_recurse = [img for img in all_pins_in_batch if str(img.id) not in visual_search_visited]
+            if not to_recurse:
+                print("[DEBUG] All pins in batch already processed by visual search. Stopping recursion.")
+                return
+            st.info(f"No new downloads, recursing visual search for {len(to_recurse)} pins in batch.")
+            for img in to_recurse:
+                new_project_name = f"20251228_Test_{img.id}"
+                new_project_dir = Path("downloads", new_project_name)
+                new_url = f"https://se.pinterest.com/pin/{img.id}/visual-search/?cropSource=5&entrypoint=closeup_cta&rs=flashlight"
+                print(f"Recursing to visual search for pin {img.id}")
+                scrape_images(
+                    url=new_url,
+                    project_name=new_project_name,
+                    project_dir=new_project_dir,
+                    res_x=res_x,
+                    res_y=res_y,
+                    limit=limit,
+                    recurse_factor=recurse_factor - 1,
+                    timeout=timeout,
+                    delay=delay,
+                    caption=caption,
+                    download_videos=download_videos,
+                    use_browser=use_browser,
+                    driver=driver,
+                    headless=headless,
+                    incognito=incognito,
+                    is_recursive=True,
+                    visual_search_visited=visual_search_visited,
+                )
+                visual_search_visited.add(str(img.id))
 
             # Log downloaded URLs
             log_file = project_dir / "downloaded_urls.log"
@@ -501,9 +555,14 @@ def scrape_images(
 
             # Recursive visual search
             if recurse_factor > 0:
-                for img in imgs_data:
+                recurse_list = imgs_data if imgs_data else skipped_imgs
+                for img in recurse_list:
                     if str(img.id) == original_pin_id:
                         continue  # Skip the original pin
+                    if str(img.id) in visual_search_visited:
+                        continue  # Уже был визуальный поиск по этому пину
+                    # Добавляем pin_id в set ДО рекурсии
+                    visual_search_visited.add(str(img.id))
                     new_project_name = f"20251228_Test_{img.id}"
                     new_project_dir = Path("downloads", new_project_name)
                     new_url = f"https://se.pinterest.com/pin/{img.id}/visual-search/?cropSource=5&entrypoint=closeup_cta&rs=flashlight"
@@ -525,6 +584,7 @@ def scrape_images(
                         headless=headless,
                         incognito=incognito,
                         is_recursive=True,
+                        visual_search_visited=visual_search_visited,
                     )
 
         # Save cache
