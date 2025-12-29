@@ -316,8 +316,8 @@ def scrape_images(
         # Patch to continue on download errors
         from pinterest_dl.low_level.http.downloader import PinterestMediaDownloader as Downloader
         original_download_concurrent = Downloader.download_concurrent
-        def patched_download_concurrent(self, media_list, output_dir, download_streams=False, num_threads=4, fail_fast=True):
-            return original_download_concurrent(self, media_list, output_dir, download_streams, num_threads, fail_fast=False)
+        def patched_download_concurrent(self, media_list, output_dir, download_streams=False, max_workers=4, fail_fast=False):
+            return original_download_concurrent(self, media_list, output_dir, download_streams, max_workers, fail_fast)
         Downloader.download_concurrent = patched_download_concurrent
 
         # Patch to increase timeout for scraping and add load more clicking
@@ -445,18 +445,27 @@ def scrape_images(
         # Filter out already downloaded files
         from pinterest_dl.scrapers.scraper_base import _ScraperBase
         registry = _ScraperBase._load_downloaded_registry(project_dir)
-        if not is_recursive:
-            original_count = len(imgs_data)
-            filtered_imgs_data = []
-            for img in imgs_data:
-                if img.id in registry:
-                    registered_path = Path(registry[img.id].get("path", ""))
-                    if registered_path.exists():
-                        print(f"Skipping already downloaded: {img.id} at {registered_path}")
-                        continue
-                filtered_imgs_data.append(img)
-            if original_count > len(imgs_data):
-                print(f"Filtered {original_count - len(imgs_data)} duplicates, downloading {len(imgs_data)} new files")
+        original_count = len(imgs_data)
+        filtered_imgs_data = []
+        new_ids = []
+        for img in imgs_data:
+            if str(img.id) in registry:
+                print(f"Skipping already downloaded: {img.id}")
+                continue
+            filtered_imgs_data.append(img)
+            new_ids.append(str(img.id))
+        if original_count > len(filtered_imgs_data):
+            print(f"Filtered {original_count - len(filtered_imgs_data)} duplicates, downloading {len(filtered_imgs_data)} new files")
+        imgs_data = filtered_imgs_data
+        # Add new pin_ids to registry before download
+        added_count = 0
+        for pin_id in new_ids:
+            if pin_id not in registry:
+                registry[pin_id] = {"path": None, "downloaded_at": None}
+                added_count += 1
+        if added_count > 0:
+            _ScraperBase._save_downloaded_registry(project_dir)
+            st.info(f"Added {added_count} new pin IDs to registry before download.")
 
         # Download
         if imgs_data:
@@ -468,13 +477,13 @@ def scrape_images(
                         imgs_data,
                         project_dir,
                         download_streams=download_videos,
-                        num_threads=4,
+                        max_workers=4,
                         fail_fast=False
                     )
                     # Update registry with downloaded files
                     for img, path in zip(imgs_data, local_paths):
-                        registry[img.id] = {"path": str(path), "downloaded_at": str(Path(path).stat().st_mtime)}
-                    _ScraperBase._save_downloaded_registry(project_dir, registry)
+                        registry[str(img.id)] = {"path": str(path), "downloaded_at": str(Path(path).stat().st_mtime)}
+                    _ScraperBase._save_downloaded_registry(project_dir)
                 except Exception as e:
                     error_str = str(e)
                     st.session_state['error'] = f"Download failed: {error_str}"
